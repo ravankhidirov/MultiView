@@ -1,0 +1,57 @@
+# MultiFlow: live flow imaging along the probe beams (12, 3, 6, 9 o'clock),
+# with recording. Probes, positions, pipe and liquid are set in the page
+# (Setup) and saved to channels.yaml. On the first run channels.yaml is
+# copied from ..\MultiView if it exists (positions and calibration carry over).
+#
+# PyYAML only reads scientific notation with a signed exponent (1.0e+6).
+
+device:
+  ip: 192.168.1.130     # board factory default; the PC needs a 192.168.1.x address
+  port: 10002
+
+board:                  # first run only
+  voltage: 400
+  rate: 120.0
+
+pipe:                   # first run only
+  diameter_mm: 50.8     # 2 in
+  diameter_is: outer
+  wall_mm: 2.0
+  wall_material: steel
+  liquid: water
+  temperature_c: 20.0
+  custom_speed_m_s: 1480.0
+
+# Live processing (flow_live.py). Same method as MultiAnalysis2/flow_export.py.
+flow:
+  learn_s: 5.0           # reference learned over this much normal flow after Start / Re-learn
+  adapt_tau_s: 120       # then follows slow drift while nothing happens (0 = frozen)
+  smooth_frames: 6       # moving power averaged over this many A-scans (0.05 s)
+  activity_frames: 30    # activity averaged over 0.25 s
+  shadow_db: 10.0        # a beam stops counting behind a new echo this strong
+  gas_db: 15.0           # ... and behind one this strong the region is gas
+  ring_db: 3.0           # wall ringing up this much = gas on the probe's wall
+  grid: 128              # points along each plane line
+  # events (shown live, written to flow_events.csv while recording)
+  event_z: 4.0           # activity above this ...
+  event_min_s: 0.25      # ... for this long starts an event
+  event_end_s: 1.5       # quiet this long ends it
+  gas_frac_min: 0.02     # gas on >= 2 % of the beam lines -> "gas"
+  sand_db: -46.0         # scatter near the bottom wall >= this -> "sand-like"
+                         # (4 Nov runs: sand -41..-37 dB, the weak one -47.6, air slugs <= -49.5, quiet ~ -52)
+
+view:
+  update_s: 0.1          # processing / page update interval
+  history_s: 60          # seconds of plane columns kept for the page
+  calibrate_s: 2.0
+
+recording:
+  directory: recordings
+  flush_every: 64
+
+replay:                  # folders whose sessions can be replayed (MultiView recordings too)
+  directories: [recordings, ../MultiView/recordings]
+
+web:
+  host: 127.0.0.1
+  port: 8012            # MultiView 8010, MultiDAQ 8008

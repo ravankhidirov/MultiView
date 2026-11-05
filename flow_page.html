@@ -1,0 +1,593 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MultiFlow - live flow imaging</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0e1116; --panel:#151a22; --line:#252c38; --text:#e6e8eb; --dim:#8e98a8;
+          --acc:#4ea1ff; --ok:#5fd38d; --warn:#ffc857; --bad:#ff6b6b; --gas:#8fd3ff; --sand:#ffb347; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.4 system-ui, Segoe UI, sans-serif; }
+  header, .bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:8px 14px;
+                 border-bottom:1px solid var(--line); background:var(--panel); }
+  h1 { font-size:16px; margin:0 8px 0 0; }
+  button { background:#232a36; color:var(--text); border:1px solid #344055; border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--acc); } button:disabled { opacity:.4; cursor:default; }
+  button.go { background:#1d4d33; border-color:#2f7a52; } button.stop { background:#4d1d1d; border-color:#7a2f2f; }
+  button.rec { background:#5a1717; border-color:#a33; font-weight:600; }
+  input, select { background:#0b0d12; color:var(--text); border:1px solid #2f3746; border-radius:5px; padding:5px 7px; font:inherit; }
+  .stat { color:var(--dim); } .stat b { color:var(--text); }
+  .pill { padding:2px 9px; border-radius:10px; font-weight:600; font-size:12px; }
+  .pill.off { background:#2a303b; color:var(--dim); } .pill.on { background:#1d4d33; color:#9ff0c1; }
+  .pill.learn { background:#4a3d12; color:#ffe2a0; }
+  .pill.rec { background:#5a1717; color:#ffd0d0; animation:blink 1.2s infinite; } @keyframes blink { 50% { opacity:.55; } }
+  .err { color:var(--bad); } .warn { color:var(--warn); } .hint { color:var(--dim); font-size:12px; } .okc { color:var(--ok); }
+  kbd { background:#2a3140; border:1px solid #3a4456; border-bottom-width:2px; border-radius:4px; padding:0 5px; font-size:11px; }
+  main { display:grid; grid-template-columns:minmax(340px, 470px) 1fr; gap:12px; padding:12px 14px; }
+  @media (max-width:1100px) { main { grid-template-columns:1fr; } }
+  .box { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px; }
+  .box h3 { margin:0 0 6px; font-size:13px; display:flex; align-items:center; gap:10px; }
+  canvas { width:100%; display:block; }
+  #xs { aspect-ratio:1/1; background:#0b0d12; border-radius:6px; }
+  .tiles { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; margin-top:8px; }
+  .tile { background:#10141b; border:1px solid var(--line); border-radius:6px; padding:7px 9px; }
+  .tile .k { color:var(--dim); font-size:11px; } .tile .v { font-size:20px; font-weight:650; } .tile .s { color:var(--dim); font-size:11px; }
+  .tile.hot { border-color:#a5761f; background:#22190c; } .tile.gas { border-color:#3b7fa8; background:#0e1e2a; }
+  .wf { height:190px; background:#0b0d12; border-radius:4px; }
+  #strip { height:190px; background:#0b0d12; border-radius:4px; }
+  #cbar { height:14px; border-radius:3px; }
+  .probes { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }
+  .probes canvas { height:96px; background:#0b0d12; border-radius:4px; margin-top:3px; }
+  #setup { padding:10px 14px; border-bottom:1px solid var(--line); background:#11151c; overflow:auto; }
+  #setup table { border-collapse:collapse; font-size:12px; } #setup td, #setup th { padding:3px 5px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  #setup input[type=number] { width:72px; } #setup .res { white-space:normal; min-width:300px; color:var(--dim); }
+  #setup tr.offrow td:not(:first-child) { opacity:.45; }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:8px; }
+  #calbar { display:none; background:#2b2410; border-bottom:1px solid #5a4a1a; }
+  #toast { position:fixed; right:16px; bottom:16px; background:#222b38; border:1px solid var(--acc); padding:10px 14px;
+           border-radius:8px; font-size:14px; opacity:0; transition:opacity .25s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  table.small { border-collapse:collapse; width:100%; font-size:12px; } table.small td, table.small th { border-bottom:1px solid var(--line); padding:3px 6px; text-align:left; }
+  .kgas { color:var(--gas); font-weight:600; } .ksand { color:var(--sand); font-weight:600; } .kboth { color:#ff8fb1; font-weight:600; }
+  input.sm { width:62px; }
+</style></head><body>
+<header>
+  <h1>MultiFlow</h1>
+  <select id="src"><option value="live">Live board</option><option value="demo">Demo (simulated flow + sand)</option><option value="replay">Replay a recording</option></select>
+  <select id="sess" style="display:none;max-width:340px"></select>
+  <select id="speed" style="display:none"><option value="1">1×</option><option value="0.5">0.5×</option><option value="2">2×</option><option value="0.25">0.25×</option></select>
+  <button id="run" class="go">Start</button>
+  <span id="runpill" class="pill off">stopped</span>
+  <button id="relearn" title="learn the normal-flow reference again (pipe running normally, nothing injected)">Re-learn reference</button>
+  <button id="setupbtn">Setup</button>
+  <button id="calbtn">Calibrate</button>
+  <span class="stat">rate <b id="hz">-</b></span>
+  <span class="stat">lost <b id="lost">0</b></span>
+  <span id="replayinfo" class="stat"></span>
+  <span id="err" class="err"></span>
+</header>
+<section class="bar" id="calbar">
+  <b>Calibrate (time zero of each probe):</b> fill the pipe completely with water, no air and no bubbles, then
+  <button id="calgo" class="go">Calibrate now</button><button id="calno">Cancel</button>
+  <span id="calmsg"></span>
+</section>
+<section id="setup" hidden>
+  <div class="row"><b>Pipe</b>
+    diameter <input id="pdia" type="number" step="0.1"> mm
+    <select id="pdis"><option value="inner">inner (bore)</option><option value="outer">outer</option></select>
+    wall <input id="pwall" type="number" step="0.1"> mm <select id="pmat"></select>
+    <span class="hint" id="pgeo"></span></div>
+  <div class="row"><b>Liquid</b>
+    <select id="pliq"><option value="water">water</option><option value="custom">other (speed below)</option></select>
+    temperature <input id="ptemp" type="number" step="0.5"> °C
+    speed <input id="pspeed" type="number" step="1"> m/s <span class="hint" id="pc"></span></div>
+  <div class="row"><b>Board</b> voltage <select id="bvolt"></select> V &middot; frame rate <input id="brate" type="number" step="1" min="1"> Hz
+    <span class="hint" id="bmax"></span>
+    <button id="sapply" class="go">Apply</button><button id="srevert">Revert</button><span id="smsg"></span></div>
+  <div class="hint" style="margin-bottom:6px">Probes on the <b>T</b> sockets (pulse-echo). Position = clock position seen from upstream
+    (12 = top, 3 = right, 6 = bottom, 9 = left), all on one cross-section.</div>
+  <table><thead><tr><th>on</th><th>ch</th><th>position</th><th>label</th><th>probe MHz</th><th>gain dB</th><th>filter MHz</th><th>window mm</th><th>in force</th></tr></thead>
+    <tbody id="stab"></tbody></table>
+</section>
+<section class="bar">
+  <input id="sname" placeholder="session name (optional)" style="width:200px">
+  <input id="fname" placeholder="file name for the next file, e.g. sand0.5g (Enter = start it)" style="width:290px">
+  <button id="recstart" class="rec">&#9679; Start recording</button>
+  <button id="recnext">Next file <kbd>Enter</kbd></button>
+  <button id="recstop" class="stop">&#9632; Stop recording</button>
+  <span id="recpill" class="pill off">not recording</span><span id="recinfo" class="hint"></span>
+  <span style="flex:1"></span>
+  <select id="mkind"></select>
+  <input id="msand" type="number" step="0.1" min="0" placeholder="sand g" style="width:76px">
+  <input id="mnote" placeholder="note" style="width:130px">
+  <button id="mark">Mark <kbd>Space</kbd></button><button id="undo">Undo</button>
+</section>
+<main>
+  <div>
+    <div class="box">
+      <h3>Cross-section now <span class="hint" id="xsinfo"></span></h3>
+      <canvas id="xs" width="600" height="600"></canvas>
+      <div class="tiles">
+        <div class="tile" id="t_gas"><div class="k">GAS on the beam lines</div><div class="v" id="v_gas">-</div><div class="s" id="s_gas"></div></div>
+        <div class="tile" id="t_bot"><div class="k">SCATTER NEAR THE BOTTOM WALL</div><div class="v" id="v_bot">-</div><div class="s" id="s_bot"></div></div>
+        <div class="tile" id="t_act"><div class="k">ACTIVITY</div><div class="v" id="v_act">-</div><div class="s" id="s_act"></div></div>
+        <div class="tile" id="t_ev"><div class="k">EVENT</div><div class="v" id="v_ev">-</div><div class="s" id="s_ev"></div></div>
+      </div>
+      <div style="margin-top:10px" class="row">
+        <span class="hint">colour</span> <input id="dblo" class="sm" type="number" step="1" value="-50"> to
+        <input id="dbhi" class="sm" type="number" step="1" value="-25"> dB
+        <span class="hint">moving scatter re each probe's far-wall echo · <span style="color:var(--gas)">■</span> gas · <span style="color:#3a3f4a">■</span> not seen</span>
+      </div>
+      <canvas id="cbar"></canvas>
+    </div>
+    <div class="box"><h3>Probes <span class="hint">envelope now (yellow) vs the reference (grey), dB</span></h3><div class="probes" id="probes"></div></div>
+  </div>
+  <div>
+    <div class="box">
+      <h3>3D view <span class="hint">the two beam planes crossing as an X inside the pipe; newest at the probe ring, older further back ·
+        drag to rotate, wheel to zoom, double-click to reset</span><span style="flex:1"></span>
+        <span class="hint">length</span><select id="len3d"><option value="4">4 × D</option><option value="8" selected>8 × D</option><option value="16">16 × D</option></select>
+        <label class="hint"><input type="checkbox" id="on3d" checked> show</label></h3>
+      <div id="wrap3d" style="position:relative"><canvas id="gl3d" style="height:400px;cursor:grab;background:#0b0d12;border-radius:4px"></canvas>
+        <canvas id="lab3d" style="position:absolute;left:0;top:0;height:400px;pointer-events:none"></canvas></div>
+    </div>
+    <div class="box">
+      <h3>Vertical plane: 12 o'clock (top) → 6 o'clock (bottom)
+        <span style="flex:1"></span><span class="hint">window</span>
+        <select id="win"><option value="10">10 s</option><option value="30" selected>30 s</option><option value="60">60 s</option></select></h3>
+      <canvas id="wfv" class="wf"></canvas>
+    </div>
+    <div class="box"><h3>Horizontal plane: 9 o'clock (left) → 3 o'clock (right)</h3><canvas id="wfh" class="wf"></canvas></div>
+    <div class="box"><h3>Activity · bottom-wall scatter · gas <span class="hint" id="striplegend"></span></h3><canvas id="strip"></canvas></div>
+    <div class="box"><h3>Events <span class="hint" id="evhint"></span></h3>
+      <table class="small"><thead><tr><th>#</th><th>time</th><th>length</th><th>looks like</th><th>max activity</th><th>max gas</th><th>max bottom scatter</th></tr></thead><tbody id="evs"></tbody></table></div>
+    <div class="box"><h3>Files and marks</h3>
+      <table class="small"><thead><tr><th>file</th><th>start</th><th>length</th><th>A-scans</th></tr></thead><tbody id="segs"></tbody></table>
+      <table class="small" style="margin-top:8px"><thead><tr><th>#</th><th>time</th><th>file</th><th>at s</th><th>type</th><th>sand g</th><th>note</th></tr></thead><tbody id="marks"></tbody></table>
+    </div>
+  </div>
+</main>
+<div id="toast"></div>
+<script>
+const $ = id => document.getElementById(id);
+let S = {}, SV = null;
+
+function toast(msg, color) { const t = $('toast'); t.innerHTML = msg; t.style.borderColor = color || 'var(--acc)';
+  t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1800); }
+async function post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); return r.json(); }
+function fit(cv) { const dpr = window.devicePixelRatio || 1, w = Math.round(cv.clientWidth * dpr), h = Math.round(cv.clientHeight * dpr);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } return dpr; }
+
+// ---------- colour table: code 0..250 = dB in [-60, -20], 252 = not seen, 255 = gas ----------
+const MAGMA = [[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],[229,80,100],[251,135,97],[254,194,135],[252,253,191]];
+let LUT = new Uint8ClampedArray(256 * 4);
+function magma(x) { x = Math.max(0, Math.min(1, x)) * (MAGMA.length - 1); const i = Math.min(MAGMA.length - 2, Math.floor(x)), f = x - i;
+  return MAGMA[i].map((v, k) => v + (MAGMA[i + 1][k] - v) * f); }
+function buildLUT() {
+  const lo = Number($('dblo').value), hi = Number($('dbhi').value), C = S.codes || { lo: -60, hi: -20 };
+  for (let c = 0; c < 256; c++) {
+    let rgb;
+    if (c === 255) rgb = [143, 211, 255]; else if (c > 250) rgb = [38, 42, 52];
+    else { const db = C.lo + c / 250 * (C.hi - C.lo); rgb = magma((db - lo) / Math.max(1, hi - lo)); }
+    LUT[c * 4] = rgb[0]; LUT[c * 4 + 1] = rgb[1]; LUT[c * 4 + 2] = rgb[2]; LUT[c * 4 + 3] = 255; }
+  const cv = $('cbar'), dpr = fit(cv), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  for (let x = 0; x < W; x++) { const [r, gg, b] = magma(x / W); g.fillStyle = `rgb(${r},${gg},${b})`; g.fillRect(x, 0, 1, H); }
+}
+for (const id of ['dblo', 'dbhi']) $(id).addEventListener('change', () => { buildLUT(); draw(); });
+
+// ---------- column buffer ----------
+const B = { cap: 0, grid: 128, n: 0, head: 0, next: 0, t: null, v: null, h: null, act: null, gasf: null, bot: null, glow: null };
+function resetBuf(rate, grid) {
+  B.cap = Math.ceil(65 * (rate || 120)); B.grid = grid || 128; B.n = 0; B.head = 0; B.next = 0;
+  B.t = new Float64Array(B.cap); B.act = new Float32Array(B.cap); B.gasf = new Float32Array(B.cap);
+  B.bot = new Float32Array(B.cap); B.glow = new Float32Array(B.cap);
+  B.v = new Uint8Array(B.cap * B.grid); B.h = new Uint8Array(B.cap * B.grid);
+}
+const idx = k => (B.head - B.n + k + B.cap) % B.cap;   // k = 0 oldest .. n-1 newest
+function decode(s) { const r = atob(s), a = new Uint8Array(r.length); for (let i = 0; i < r.length; i++) a[i] = r.charCodeAt(i); return a; }
+let fetching = false;
+async function pull() {
+  if (fetching || !S.running) return; fetching = true;
+  try {
+    const d = await (await fetch('/api/flow?since=' + B.next)).json();
+    if (d.next < B.next) { resetBuf(S.rate, S.grid); fetching = false; return; }   // server restarted
+    if (d.n) {
+      const v = decode(d.v), h = decode(d.h), G = B.grid;
+      for (let i = 0; i < d.n; i++) {
+        const p = B.head;
+        B.t[p] = d.t[i]; B.act[p] = d.act[i]; B.gasf[p] = d.gasf[i];
+        B.bot[p] = d.bot[i] == null ? NaN : d.bot[i]; B.glow[p] = d.glow[i] == null ? NaN : d.glow[i];
+        B.v.set(v.subarray(i * G, (i + 1) * G), p * G); B.h.set(h.subarray(i * G, (i + 1) * G), p * G);
+        B.head = (B.head + 1) % B.cap; B.n = Math.min(B.cap, B.n + 1);
+      }
+      B.next = d.next;
+      draw();
+    }
+  } catch (e) {}
+  fetching = false;
+}
+
+// ---------- waterfalls ----------
+const off = document.createElement('canvas');
+const TEXW = 1024, texV = document.createElement('canvas'), texH = document.createElement('canvas');
+function drawWF(cv, arr, label0, label1, tex) {
+  const dpr = fit(cv), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  g.fillStyle = '#0b0d12'; g.fillRect(0, 0, W, H);
+  const l = 44 * dpr, r = 8 * dpr, t = 6 * dpr, b = 20 * dpr, w = W - l - r, h = H - t - b;
+  const win = Number($('win').value), G = B.grid;
+  g.fillStyle = '#8e98a8'; g.font = `${10 * dpr}px system-ui`;
+  if (tex) { tex.width = TEXW; tex.height = G; const tg = tex.getContext('2d'); tg.fillStyle = '#0b0d12'; tg.fillRect(0, 0, TEXW, G); }
+  if (!B.n) { g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(S.running ? (S.learning < 1 ? 'learning the reference...' : 'waiting for data...') : 'Start to see the flow', l + w / 2, t + h / 2); return; }
+  const tEnd = B.t[idx(B.n - 1)], tStart = tEnd - win;
+  let k0 = 0; while (k0 < B.n && B.t[idx(k0)] < tStart) k0++;
+  const n = B.n - k0;
+  if (n > 0) {
+    off.width = n; off.height = G;
+    const og = off.getContext('2d'), img = og.createImageData(n, G), px = img.data;
+    for (let c = 0; c < n; c++) { const p = idx(k0 + c) * G;
+      for (let j = 0; j < G; j++) { const code = arr[p + j], o = ((G - 1 - j) * n + c) * 4, q = code * 4;
+        px[o] = LUT[q]; px[o + 1] = LUT[q + 1]; px[o + 2] = LUT[q + 2]; px[o + 3] = 255; } }
+    og.putImageData(img, 0, 0);
+    const x0 = l + (B.t[idx(k0)] - tStart) / win * w;
+    g.imageSmoothingEnabled = n > w; g.drawImage(off, 0, 0, n, G, x0, t, l + w - x0, h);
+    if (tex) { const tg = tex.getContext('2d'), tx0 = (B.t[idx(k0)] - tStart) / win * TEXW;
+      tg.imageSmoothingEnabled = n > TEXW; tg.drawImage(off, 0, 0, n, G, tx0, 0, TEXW - tx0, G); }
+  }
+  // axes
+  const R = (S.geo || {}).radius_mm || 23.4;
+  g.strokeStyle = '#2b3342'; g.lineWidth = dpr; g.textAlign = 'right'; g.textBaseline = 'middle'; g.fillStyle = '#8e98a8';
+  for (const v of [-20, -10, 0, 10, 20]) { if (Math.abs(v) > R) continue; const y = t + (1 - (v + R) / (2 * R)) * h; g.fillText(v, l - 4 * dpr, y); }
+  g.save(); g.translate(10 * dpr, t + h / 2); g.rotate(-Math.PI / 2); g.textAlign = 'center'; g.fillText('mm', 0, 0); g.restore();
+  g.textAlign = 'left'; g.textBaseline = 'top'; g.fillStyle = '#c9cfda'; g.fillText(label0, l + 4 * dpr, t + 2 * dpr);
+  g.textBaseline = 'bottom'; g.fillText(label1, l + 4 * dpr, t + h - 2 * dpr);
+  timeAxis(g, l, t + h, w, win, dpr);
+  marksOn(g, l, t, w, h, tEnd, win, dpr);
+}
+function timeAxis(g, l, y, w, win, dpr) {
+  g.fillStyle = '#8e98a8'; g.textAlign = 'center'; g.textBaseline = 'top'; g.font = `${10 * dpr}px system-ui`;
+  const step = win <= 10 ? 2 : win <= 30 ? 5 : 10;
+  for (let s = 0; s <= win; s += step) g.fillText(s === 0 ? 'now' : `-${s} s`, l + w - s / win * w, y + 4 * dpr);
+}
+function marksOn(g, l, t, w, h, tEnd, win, dpr) {
+  for (const [id, ts] of Object.entries(S.marks_t || {})) { const x = l + w - (tEnd - ts) / win * w; if (x < l) continue;
+    g.strokeStyle = '#ffb347'; g.lineWidth = 1.5 * dpr; g.beginPath(); g.moveTo(x, t); g.lineTo(x, t + h); g.stroke();
+    g.fillStyle = '#ffb347'; g.textAlign = 'left'; g.textBaseline = 'top'; g.fillText('#' + id, x + 2 * dpr, t); }
+}
+
+// ---------- strip chart ----------
+function drawStrip() {
+  const cv = $('strip'), dpr = fit(cv), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  g.fillStyle = '#0b0d12'; g.fillRect(0, 0, W, H);
+  const l = 44 * dpr, r = 44 * dpr, t = 6 * dpr, b = 20 * dpr, w = W - l - r, h = H - t - b, win = Number($('win').value);
+  if (!B.n) return;
+  const F = S.flow || {}, tEnd = B.t[idx(B.n - 1)], X = tt => l + w - (tEnd - tt) / win * w;
+  // events
+  for (const e of (S.events || [])) { const x0 = Math.max(l, X(e.start)), x1 = X(e.end); if (x1 < l) continue;
+    g.fillStyle = e.kind && e.kind.startsWith('sand') ? 'rgba(255,179,71,0.16)' : e.kind && e.kind.startsWith('gas') ? 'rgba(143,211,255,0.14)' : 'rgba(200,200,200,0.08)';
+    g.fillRect(x0, t, Math.max(2, x1 - x0), h); }
+  // activity: log scale 0.5..100 on the left half of the height
+  const ya = v => t + h - Math.log10(Math.max(0.5, Math.min(100, v)) / 0.5) / Math.log10(200) * h;
+  const yb = v => t + h - (Math.max(-60, Math.min(-20, v)) + 60) / 40 * h;   // dB
+  const series = (arr, Y, col, skip) => { g.strokeStyle = col; g.lineWidth = 1.2 * dpr; g.beginPath(); let on = false;
+    for (let k = 0; k < B.n; k++) { const i = idx(k), tt = B.t[i]; if (tt < tEnd - win) continue; const v = arr[i];
+      if (!isFinite(v) || (skip && skip(v))) { on = false; continue; } const x = X(tt), y = Y(v); if (!on) { g.moveTo(x, y); on = true; } else g.lineTo(x, y); }
+    g.stroke(); };
+  g.setLineDash([4 * dpr, 3 * dpr]); g.lineWidth = dpr;
+  g.strokeStyle = '#6d7686'; g.beginPath(); g.moveTo(l, ya(F.event_z || 4)); g.lineTo(l + w, ya(F.event_z || 4)); g.stroke();
+  g.strokeStyle = '#a5761f'; g.beginPath(); g.moveTo(l, yb(F.sand_db || -46)); g.lineTo(l + w, yb(F.sand_db || -46)); g.stroke(); g.setLineDash([]);
+  series(B.act, ya, '#c9cfda');
+  series(B.bot, yb, '#ffb347');
+  // gas fraction as filled bars at the bottom (0..100 % -> 0..40 % of the height)
+  g.fillStyle = 'rgba(143,211,255,0.75)';
+  for (let k = 0; k < B.n; k++) { const i = idx(k), tt = B.t[i]; if (tt < tEnd - win || !(B.gasf[i] > 0)) continue;
+    const x = X(tt), hh = Math.min(1, B.gasf[i] / 0.5) * h * 0.4; g.fillRect(x, t + h - hh, Math.max(1, dpr), hh); }
+  g.fillStyle = '#8e98a8'; g.font = `${10 * dpr}px system-ui`; g.textBaseline = 'middle';
+  g.textAlign = 'right'; for (const v of [1, 10, 100]) g.fillText(v, l - 4 * dpr, ya(v));
+  g.textAlign = 'left'; for (const v of [-60, -50, -40, -30, -20]) g.fillText(v + ' dB', l + w + 4 * dpr, yb(v));
+  timeAxis(g, l, t + h, w, win, dpr); marksOn(g, l, t, w, h, tEnd, win, dpr);
+  $('striplegend').innerHTML = `<span style="color:#c9cfda">— activity z</span> (dashed: event at ${F.event_z}) · <span style="color:#ffb347">— bottom-wall scatter dB</span> (dashed: sand-like at ${F.sand_db}) · <span style="color:var(--gas)">▮ gas on the beam lines</span>`;
+}
+
+// ---------- cross-section ----------
+function drawXS() {
+  const cv = $('xs'), dpr = fit(cv), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  g.fillStyle = '#0b0d12'; g.fillRect(0, 0, W, H);
+  const geo = S.geo;
+  if (!geo) { g.fillStyle = '#8e98a8'; g.font = `${14 * dpr}px system-ui`; g.textAlign = 'center'; g.fillText('Start to see the cross-section', W / 2, H / 2); return; }
+  const R = geo.radius_mm, cx = W / 2, cy = H / 2, k = (Math.min(W, H) / 2 - 46 * dpr) / R, G = B.grid;
+  g.beginPath(); g.arc(cx, cy, k * R + 7 * dpr, 0, 2 * Math.PI); g.fillStyle = '#5b6474'; g.fill();
+  g.beginPath(); g.arc(cx, cy, k * R, 0, 2 * Math.PI); g.fillStyle = '#0d1824'; g.fill();
+  const P = (x, y) => [cx + k * x, cy - k * y];
+  if (B.n) {
+    // latest frames: strongest scatter over the last 0.05 s; gas from the newest frame
+    const last = idx(B.n - 1), nk = Math.min(B.n, 6);
+    const pick = (arr, j) => { const gcode = arr[last * G + j]; if (gcode === 255) return 255; let m = -1;
+      for (let q = 0; q < nk; q++) { const c = arr[idx(B.n - 1 - q) * G + j]; if (c <= 250 && c > m) m = c; } return m < 0 ? gcode : m; };
+    const cell = 2 * R / G * k + 0.6;
+    for (const [arr, vert] of [[B.v, true], [B.h, false]]) {
+      for (let j = 0; j < G; j++) { const s = -R + (j + 0.5) / G * 2 * R, c = pick(arr, j);
+        g.fillStyle = `rgb(${LUT[c * 4]},${LUT[c * 4 + 1]},${LUT[c * 4 + 2]})`;
+        const [x, y] = vert ? P(0, s) : P(s, 0);
+        if (vert) g.fillRect(x - 9 * dpr, y - cell / 2, 18 * dpr, cell); else g.fillRect(x - cell / 2, y - 9 * dpr, cell, 18 * dpr); } }
+    const gl = B.glow[last];
+    if (isFinite(gl)) { const yl = -R + gl, xl = Math.sqrt(Math.max(R * R - yl * yl, 0)), [x1, y1] = P(-xl, yl), [x2] = P(xl, yl);
+      g.strokeStyle = '#8fd3ff'; g.setLineDash([6 * dpr, 4 * dpr]); g.lineWidth = 2 * dpr; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y1); g.stroke(); g.setLineDash([]);
+      g.fillStyle = '#8fd3ff'; g.font = `${11 * dpr}px system-ui`; g.textAlign = 'center'; g.textBaseline = 'top';
+      g.fillText(`gas down to ${gl.toFixed(1)} mm above the bottom`, cx, Math.min(y1 + 4 * dpr, cy + k * R - 16 * dpr)); }
+  }
+  // probes
+  g.font = `${11 * dpr}px system-ui`;
+  for (const c of (S.channels || [])) { if (c.angle_deg == null) continue;
+    const a = c.angle_deg * Math.PI / 180, ux = Math.sin(a), uy = Math.cos(a), rp = k * R + 16 * dpr;
+    const [qx, qy] = [cx + rp * ux, cy - rp * uy];
+    g.save(); g.translate(qx, qy); g.rotate(a); g.fillStyle = '#c9a227'; g.fillRect(-9 * dpr, -6 * dpr, 18 * dpr, 12 * dpr); g.restore();
+    g.fillStyle = '#e6e8eb'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    const tx = cx + (k * R + 34 * dpr) * ux, ty = cy - (k * R + 34 * dpr) * uy;
+    g.fillText(c.name, Math.min(Math.max(tx, 18 * dpr), W - 18 * dpr), Math.min(Math.max(ty, 8 * dpr), H - 8 * dpr)); }
+  $('xsinfo').textContent = B.n ? `t = ${B.t[idx(B.n - 1)].toFixed(1)} s` + (S.latest && S.latest.scene ? ` · ${S.latest.scene}` : '') : '';
+}
+
+// ---------- tiles ----------
+function tiles() {
+  const F = S.flow || {};
+  if (!B.n) { for (const k of ['gas', 'bot', 'act', 'ev']) { $('v_' + k).textContent = '-'; $('s_' + k).textContent = ''; $('t_' + k).className = 'tile'; } }
+  else {
+    const i = idx(B.n - 1);
+    // 0.25 s maxima, so the numbers do not flicker
+    let gf = 0, bt = -99, ac = 0; for (let q = 0; q < Math.min(B.n, 30); q++) { const j = idx(B.n - 1 - q);
+      gf = Math.max(gf, B.gasf[j]); if (isFinite(B.bot[j])) bt = Math.max(bt, B.bot[j]); ac = Math.max(ac, B.act[j]); }
+    $('v_gas').textContent = gf > 0 ? (gf * 100).toFixed(0) + ' %' : 'none';
+    $('s_gas').textContent = isFinite(B.glow[i]) ? `gas reaches down to ${B.glow[i].toFixed(1)} mm above the bottom` : 'of the two beam lines';
+    $('t_gas').className = 'tile' + (gf >= (F.gas_frac_min || 0.02) ? ' gas' : '');
+    $('v_bot').textContent = bt > -99 ? bt.toFixed(1) + ' dB' : '-';
+    $('s_bot').textContent = `sand-like at ≥ ${F.sand_db} dB · quiet ≈ -52`;
+    $('t_bot').className = 'tile' + (bt >= F.sand_db ? ' hot' : '');
+    $('v_act').textContent = ac.toFixed(1); $('s_act').textContent = `z, event at > ${F.event_z}`;
+    $('t_act').className = 'tile' + (ac > F.event_z ? ' hot' : '');
+  }
+  const ev = (S.events || []).slice(-1)[0];
+  if (ev && ev.open) { $('v_ev').innerHTML = kindHTML(ev.kind); $('s_ev').textContent = `now, ${ev.duration.toFixed(1)} s`; $('t_ev').className = 'tile hot'; }
+  else if (ev) { $('v_ev').innerHTML = kindHTML(ev.kind); $('s_ev').textContent = `last (#${ev.id}, ${ev.duration.toFixed(1)} s, ended at ${ev.end.toFixed(1)} s)`; $('t_ev').className = 'tile'; }
+  else { $('v_ev').textContent = 'none'; $('s_ev').textContent = ''; $('t_ev').className = 'tile'; }
+}
+const kindHTML = k => !k ? '-' : k === 'gas' ? '<span class="kgas">gas</span>' : k === 'sand-like' ? '<span class="ksand">sand-like</span>' :
+  k === 'sand-like + gas' ? '<span class="kboth">sand-like + gas</span>' : '<span class="hint">activity</span>';
+
+// ---------- probes ----------
+function probesPanel() {
+  const chs = (S.channels || []).filter(c => c.angle_deg != null), key = chs.map(c => c.name).join(',');
+  if ($('probes').dataset.key !== key) { $('probes').dataset.key = key;
+    $('probes').innerHTML = chs.map(c => `<div><div id="pt_${c.name}" class="hint"></div><canvas id="pc_${c.name}"></canvas></div>`).join(''); }
+  const L = S.latest;
+  for (const c of chs) {
+    const p = L && L.probes[c.name], st = (S.stats || {})[c.name] || {};
+    const blocked = p && p.ring_db >= (S.flow.ring_db || 3), sh = p && p.shadow_mm != null && p.shadow_mm < 1e3;
+    $('pt_' + c.name).innerHTML = `<b style="color:#e6e8eb">${c.name}</b> · ${c.position || '?'} o'clock · ${st.rate || 0} Hz` +
+      (p ? ` · ref far wall ${p.ref_amp} (${p.ref_time})` + (blocked ? ' · <span class="kgas">gas on its wall</span>' : sh ? ` · <span class="warn">sees up to ${p.shadow_mm.toFixed(1)} mm</span>` : '') : '') +
+      (c.calibrated ? '' : ' · <span class="warn">not calibrated</span>');
+    const cv = $('pc_' + c.name); if (!cv) continue;
+    const dpr = fit(cv), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+    g.fillStyle = '#0b0d12'; g.fillRect(0, 0, W, H);
+    if (!p) continue;
+    const n = p.env.length, tmax = n * p.bin_us, X = tt => tt / tmax * W, Y = v => H - 4 * dpr - Math.max(0, Math.min(1, 20 * Math.log10(Math.max(v, 1)) / 80)) * (H - 8 * dpr);
+    const line = (arr, col) => { g.strokeStyle = col; g.lineWidth = dpr; g.beginPath(); arr.forEach((v, i) => { const x = X((i + 0.5) * p.bin_us), y = Y(v); if (i) g.lineTo(x, y); else g.moveTo(x, y); }); g.stroke(); };
+    line(p.prof, '#5a6272'); line(p.env, '#ffd27f');
+    g.strokeStyle = '#7fd1ff'; g.setLineDash([3 * dpr, 3 * dpr]); g.beginPath(); g.moveTo(X(p.far), 0); g.lineTo(X(p.far), H); g.stroke();
+    g.strokeStyle = '#8e98a8'; g.beginPath(); g.moveTo(X(p.t0), 0); g.lineTo(X(p.t0), H); g.stroke(); g.setLineDash([]);
+    if (sh && !blocked) { const geo = S.geo, ts = p.t0 + 2 * p.shadow_mm / (geo.c / 1000); g.strokeStyle = '#8fd3ff'; g.lineWidth = 2 * dpr; g.beginPath(); g.moveTo(X(ts), 0); g.lineTo(X(ts), H); g.stroke(); }
+    g.fillStyle = '#8e98a8'; g.font = `${9 * dpr}px system-ui`; g.textAlign = 'right'; g.textBaseline = 'top'; g.fillText(`${tmax.toFixed(0)} µs`, W - 2 * dpr, 2 * dpr);
+  }
+}
+
+// ---------- 3D view ----------
+// Pipe axis = z. Newest data at z = 0 (the probe ring), the window's oldest at z = L (downstream).
+// Looking downstream (+z) with y up, 3 o'clock must appear on the right, which in a right-handed
+// system is -x: a probe at clock angle a sits at (-R sin a, R cos a). Planes are textured with the waterfall images.
+const V3 = { gl: null, yaw: -0.85, pitch: 0.32, zoom: 0.8, drag: null, dirty: true };
+function m4mul(a, b) { const o = new Float32Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+  let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + j] * b[i * 4 + k]; o[i * 4 + j] = s; } return o; }
+function m4persp(fov, asp, n, f) { const t = 1 / Math.tan(fov / 2), o = new Float32Array(16);
+  o[0] = t / asp; o[5] = t; o[10] = (f + n) / (n - f); o[11] = -1; o[14] = 2 * f * n / (n - f); return o; }
+function m4look(e, c, u) { const sub = (a, b) => a.map((v, i) => v - b[i]), nrm = a => { const l = Math.hypot(...a); return a.map(v => v / l); },
+  cr = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const z = nrm(sub(e, c)), x = nrm(cr(u, z)), y = cr(z, x);
+  return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, e), -dot(y, e), -dot(z, e), 1]); }
+function glProg(gl, vs, fs) { const sh = (t, src) => { const o = gl.createShader(t); gl.shaderSource(o, src); gl.compileShader(o); return o; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); return p; }
+function init3D() {
+  const cv = $('gl3d'), gl = cv.getContext('webgl', { antialias: true });
+  if (!gl) { V3.failed = true; return; }
+  V3.gl = gl;
+  V3.pt = glProg(gl, 'attribute vec3 p; attribute vec2 uv; uniform mat4 M; varying vec2 v; void main(){ gl_Position = M * vec4(p, 1.0); v = uv; }',
+    'precision mediump float; varying vec2 v; uniform sampler2D T; void main(){ gl_FragColor = texture2D(T, v); }');
+  V3.pc = glProg(gl, 'attribute vec3 p; uniform mat4 M; void main(){ gl_Position = M * vec4(p, 1.0); }',
+    'precision mediump float; uniform vec4 C; void main(){ gl_FragColor = C; }');
+  V3.buf = gl.createBuffer();
+  V3.tex = [gl.createTexture(), gl.createTexture()];
+  for (const t of V3.tex) { gl.bindTexture(gl.TEXTURE_2D, t);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v); }
+  cv.addEventListener('pointerdown', e => { V3.drag = [e.clientX, e.clientY, V3.yaw, V3.pitch]; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; });
+  cv.addEventListener('pointermove', e => { if (!V3.drag) return; const [x, y, yw, pt] = V3.drag;
+    V3.yaw = yw - (e.clientX - x) * 0.008; V3.pitch = Math.max(-1.45, Math.min(1.45, pt + (e.clientY - y) * 0.008)); render3D(); });
+  cv.addEventListener('pointerup', () => { V3.drag = null; cv.style.cursor = 'grab'; });
+  cv.addEventListener('wheel', e => { e.preventDefault(); V3.zoom = Math.max(0.25, Math.min(4, V3.zoom * Math.exp(e.deltaY * 0.001))); render3D(); }, { passive: false });
+  cv.addEventListener('dblclick', () => { V3.yaw = -0.85; V3.pitch = 0.32; V3.zoom = 0.8; render3D(); });
+}
+function draw3(gl, prog, mode, verts, stride, M, extra) {
+  gl.useProgram(prog); gl.bindBuffer(gl.ARRAY_BUFFER, V3.buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STREAM_DRAW);
+  const ap = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap, 3, gl.FLOAT, false, stride * 4, 0);
+  const au = gl.getAttribLocation(prog, 'uv'); if (au >= 0) { gl.enableVertexAttribArray(au); gl.vertexAttribPointer(au, 2, gl.FLOAT, false, stride * 4, 12); }
+  gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'M'), false, M); if (extra) extra();
+  gl.drawArrays(mode, 0, verts.length / stride); if (au >= 0) gl.disableVertexAttribArray(au);
+}
+function render3D(newData) {
+  const box = $('wrap3d'); if (!$('on3d').checked) { box.style.display = 'none'; return; } box.style.display = '';
+  if (!V3.gl && !V3.failed) init3D();
+  const cv = $('gl3d'), lab = $('lab3d'), dpr = fit(cv); fit(lab);
+  const lg = lab.getContext('2d'); lg.clearRect(0, 0, lab.width, lab.height);
+  if (V3.failed) { lg.fillStyle = '#ff6b6b'; lg.font = `${13 * dpr}px system-ui`; lg.fillText('This browser has no WebGL; the 3D view is not available.', 12 * dpr, 24 * dpr); return; }
+  const gl = V3.gl, W = cv.width, H = cv.height, R = (S.geo || {}).radius_mm || 23.4, L = 2 * R * Number($('len3d').value);
+  gl.viewport(0, 0, W, H); gl.clearColor(0.043, 0.051, 0.071, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // camera
+  const tgt = [0, 0, L * 0.42], dist = (L * 0.75 + 5 * R) * V3.zoom, cp = Math.cos(V3.pitch);
+  const eye = [tgt[0] + dist * cp * Math.sin(V3.yaw), tgt[1] + dist * Math.sin(V3.pitch), tgt[2] - dist * cp * Math.cos(V3.yaw)];
+  const M = m4mul(m4persp(0.62, W / H, Math.max(1, dist * 0.02), dist * 4), m4look(eye, tgt, [0, 1, 0]));
+  gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+  // planes (texture: left = oldest = z L, right = now = z 0; top row = +R)
+  const texs = [texV, texH];
+  for (let i = 0; i < 2; i++) { gl.bindTexture(gl.TEXTURE_2D, V3.tex[i]);
+    if (texs[i].width) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texs[i]); }
+  const quad = vert => vert ? [0, R, 0, 1, 0, 0, -R, 0, 1, 1, 0, R, L, 0, 0, 0, -R, L, 0, 1]
+                            : [-R, 0, 0, 1, 0, R, 0, 0, 1, 1, -R, 0, L, 0, 0, R, 0, L, 0, 1];
+  for (let i = 0; i < 2; i++) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, V3.tex[i]);
+    draw3(gl, V3.pt, gl.TRIANGLE_STRIP, quad(i === 0), 5, M, () => gl.uniform1i(gl.getUniformLocation(V3.pt, 'T'), 0)); }
+  const col = c => () => gl.uniform4fv(gl.getUniformLocation(V3.pc, 'C'), c);
+  // probes: small boxes on the ring at z = 0
+  for (const c of (S.channels || [])) { if (c.angle_deg == null) continue;
+    const a = c.angle_deg * Math.PI / 180, r = [-Math.sin(a), Math.cos(a), 0], tng = [Math.cos(a), Math.sin(a), 0], cen = r.map(v => v * (R + 3.5));
+    const P = (u, v, w) => [cen[0] + r[0] * u * 3 + tng[0] * v * 4, cen[1] + r[1] * u * 3 + tng[1] * v * 4, w * 4];
+    const C8 = [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]].map(q => P(...q));
+    const F = [[0, 1, 2, 0, 2, 3], [4, 5, 6, 4, 6, 7], [0, 1, 5, 0, 5, 4], [2, 3, 7, 2, 7, 6], [1, 2, 6, 1, 6, 5], [0, 3, 7, 0, 7, 4]];
+    draw3(gl, V3.pc, gl.TRIANGLES, F.flat().flatMap(k => C8[k]), 3, M, col([0.79, 0.64, 0.15, 1])); }
+  // pipe wall: transparent surface + rings + lines
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+  const N = 64, ring = z => { const o = []; for (let k = 0; k <= N; k++) { const a = k / N * 2 * Math.PI; o.push(R * Math.sin(a), R * Math.cos(a), z); } return o; };
+  const surf = []; for (let k = 0; k <= N; k++) { const a = k / N * 2 * Math.PI, x = R * Math.sin(a), y = R * Math.cos(a); surf.push(x, y, 0, x, y, L); }
+  draw3(gl, V3.pc, gl.TRIANGLE_STRIP, surf, 3, M, col([0.55, 0.6, 0.72, 0.10]));
+  for (const z of [0, L]) draw3(gl, V3.pc, gl.LINE_STRIP, ring(z), 3, M, col([0.7, 0.75, 0.85, z === 0 ? 0.9 : 0.45]));
+  const win = Number($('win').value), step = win <= 10 ? 2 : win <= 30 ? 5 : 10;
+  for (let s = step; s < win; s += step) draw3(gl, V3.pc, gl.LINE_STRIP, ring(s / win * L), 3, M, col([0.6, 0.65, 0.75, 0.16]));
+  const longi = []; for (let k = 0; k < 8; k++) { const a = k / 8 * 2 * Math.PI; longi.push(R * Math.sin(a), R * Math.cos(a), 0, R * Math.sin(a), R * Math.cos(a), L); }
+  draw3(gl, V3.pc, gl.LINES, longi, 3, M, col([0.6, 0.65, 0.75, 0.22]));
+  // outline the two planes so the X stays visible where the flow is quiet (dark)
+  draw3(gl, V3.pc, gl.LINES, [0, R, 0, 0, R, L, 0, -R, 0, 0, -R, L, 0, R, L, 0, -R, L, 0, R, 0, 0, -R, 0,
+                              -R, 0, 0, -R, 0, L, R, 0, 0, R, 0, L, -R, 0, L, R, 0, L, -R, 0, 0, R, 0, 0], 3, M, col([0.85, 0.88, 0.95, 0.45]));
+  gl.depthMask(true); gl.disable(gl.BLEND);
+  // labels
+  const proj = (x, y, z) => { const v = [x, y, z, 1], o = [0, 0, 0, 0]; for (let i = 0; i < 4; i++) o[i] = M[i] * v[0] + M[4 + i] * v[1] + M[8 + i] * v[2] + M[12 + i];
+    if (o[3] <= 0) return null; return [(o[0] / o[3] * 0.5 + 0.5) * W, (1 - (o[1] / o[3] * 0.5 + 0.5)) * H]; };
+  lg.font = `${11 * dpr}px system-ui`; lg.textAlign = 'center'; lg.textBaseline = 'middle';
+  for (const c of (S.channels || [])) { if (c.angle_deg == null) continue; const a = c.angle_deg * Math.PI / 180;
+    const q = proj(-(R + 11) * Math.sin(a), (R + 11) * Math.cos(a), 0); if (q) { lg.fillStyle = '#e6e8eb'; lg.fillText(c.name, q[0], q[1]); } }
+  lg.fillStyle = '#9aa4b4';
+  for (let s = 0; s <= win; s += step) { const q = proj(-R - 6, -R - 6, s / win * L); if (q) lg.fillText(s === 0 ? 'now' : `-${s} s`, q[0], q[1]); }
+  if (B.n) { lg.textAlign = 'left'; lg.fillStyle = '#c9cfda'; lg.fillText(`t = ${B.t[idx(B.n - 1)].toFixed(1)} s`, 10 * dpr, 14 * dpr); }
+  lg.textAlign = 'right'; lg.fillStyle = '#8e98a8';
+  lg.fillText('colour: moving scatter, dB re far wall · light blue: gas', W - 10 * dpr, H - 12 * dpr);
+}
+$('on3d').onchange = () => render3D(); $('len3d').onchange = () => render3D();
+
+// ---------- status ----------
+function draw() { drawWF($('wfv'), B.v, "12 o'clock (top)", "6 o'clock (bottom)", texV); drawWF($('wfh'), B.h, "3 o'clock (right)", "9 o'clock (left)", texH);
+  drawStrip(); drawXS(); tiles(); render3D(true); }
+let lastRunning = null;
+async function poll() {
+  try { S = await (await fetch('/api/status')).json(); } catch (e) { return; }
+  if (!poll.inited) { poll.inited = true; $('src').value = S.source || 'live'; $('src').onchange(); buildLUT(); }
+  if (S.running && lastRunning !== true) resetBuf(S.rate, S.grid);
+  lastRunning = S.running;
+  const R = S.rec || {};
+  $('runpill').className = 'pill ' + (!S.running ? 'off' : S.learning < 1 ? 'learn' : 'on');
+  $('runpill').textContent = !S.running ? 'stopped' : S.learning < 1 ? `learning reference ${(S.learning * 100).toFixed(0)}%` :
+    ({ live: 'live board', demo: 'demo', replay: 'replay' }[S.source] || S.source);
+  $('run').textContent = S.running ? 'Stop' : 'Start'; $('run').className = S.running ? 'stop' : 'go';
+  $('src').disabled = S.running; $('sess').disabled = S.running; $('speed').disabled = S.running;
+  $('relearn').disabled = !S.running;
+  const rates = Object.values(S.stats || {}).map(s => s.rate); $('hz').textContent = rates.length ? Math.min(...rates).toFixed(0) + ' Hz' : '-';
+  $('lost').textContent = Object.values(S.stats || {}).reduce((a, s) => a + s.lost, 0) + (S.pc_dropped ? ` (+${S.pc_dropped} PC)` : '') + (S.analysis_skipped ? ` · ${S.analysis_skipped} not processed` : '');
+  $('err').textContent = S.error || '';
+  $('replayinfo').textContent = S.replay ? `replay ${S.replay.session}: ${((S.replay.frame + 1) / (S.rate || 120)).toFixed(1)} / ${(S.replay.frames / (S.rate || 120)).toFixed(1)} s at ${S.replay.speed}×` : '';
+  const sel = $('sess'), opts = (S.sessions || []).map(s => s[0]).join('|');
+  if (sel.dataset.opts !== opts) { sel.dataset.opts = opts; sel.innerHTML = (S.sessions || []).map(([k, lab]) => `<option value="${k}">${k}${lab ? ' · ' + lab : ''}</option>`).join('') || '<option value="">no recordings found</option>'; }
+  const live = S.running && S.source !== 'replay';
+  $('recstart').disabled = !live || R.recording; $('recnext').disabled = !R.recording; $('recstop').disabled = !R.recording;
+  $('mark').disabled = !R.recording; $('undo').disabled = !R.recording || !R.n_marks; $('setupbtn').disabled = !!R.recording;
+  $('calbtn').disabled = !live || R.recording;
+  $('recpill').className = 'pill ' + (R.recording ? 'rec' : 'off'); $('recpill').textContent = R.recording ? `REC file ${R.segment}` : 'not recording';
+  $('recinfo').textContent = R.session ? (R.recording ? `${R.session} · file ${R.segment} · ${R.mb_total} MB · ${R.n_marks} marks` : `last: ${R.folder}`) : '';
+  if ($('mkind').options.length !== (S.kinds || []).length) $('mkind').innerHTML = (S.kinds || []).map(k => `<option>${k}</option>`).join('');
+  const C = S.calibration;
+  if (C) $('calmsg').innerHTML = C.status === 'collecting' ? 'collecting 2 s of data...' :
+    (C.status === 'failed' ? '<span class="err">failed</span> ' : `<span class="okc">calibrated ${C.time}</span>: `) +
+    Object.entries(C.results || {}).map(([n, r]) => `${n} time zero ${r.t0_us} µs`).join(' · ') +
+    Object.entries(C.errors || {}).map(([n, e]) => ` · <span class="err">${n} not calibrated</span>: ${e}`).join('');
+  $('evs').innerHTML = (S.events || []).slice().reverse().map(e => `<tr><td>${e.id}</td><td>${e.start.toFixed(1)}–${e.end.toFixed(1)} s</td><td>${e.duration.toFixed(1)} s${e.open ? ' ●' : ''}</td>
+    <td>${kindHTML(e.kind)}</td><td>${e.act_max.toFixed(1)}</td><td>${(e.gas_max * 100).toFixed(1)} %</td><td>${e.bottom_db_max > -98 ? e.bottom_db_max.toFixed(1) + ' dB' : '-'}</td></tr>`).join('');
+  $('evhint').textContent = S.flow ? `gas = gas on ≥ ${(S.flow.gas_frac_min * 100).toFixed(0)} % of the beam lines · sand-like = bottom-wall scatter ≥ ${S.flow.sand_db} dB · ${S.events && S.events.length ? '' : 'none yet'}` : '';
+  $('segs').innerHTML = (R.segments || []).slice().reverse().map(g => `<tr><td>${g.n}${g.name ? ' <b>' + g.name + '</b>' : ''}${g.open ? ' &#9679;' : ''}</td><td>${g.start}</td><td>${g.duration_s != null ? g.duration_s.toFixed(1) + ' s' : 'recording'}</td><td>${Object.entries(g.ascans || {}).map(([k, v]) => k + ' ' + v).join(', ')}</td></tr>`).join('');
+  $('marks').innerHTML = (R.marks || []).slice().reverse().map(m => `<tr><td>${m.id}</td><td>${m.time.slice(11, 23)}</td><td>${m.segment}</td><td>${m.segment_s.toFixed(2)}</td><td>${m.kind}</td><td>${m.sand_g ?? ''}</td><td>${m.note || ''}</td></tr>`).join('');
+  probesPanel();
+  if (!S.running || !B.n) draw();
+}
+
+// ---------- controls ----------
+async function act(url, body, ok, color) { const d = await post(url, body);
+  if (d.error) toast('<span class="err">' + d.error + '</span>', '#ff4d4d'); else if (ok) toast(typeof ok === 'function' ? ok(d) : ok, color); poll(); return d; }
+$('src').onchange = () => { const r = $('src').value === 'replay'; $('sess').style.display = $('speed').style.display = r ? '' : 'none'; };
+$('run').onclick = () => S.running ? act('/api/stop', {}, 'stopped') :
+  act('/api/start', { source: $('src').value, session: $('sess').value, speed: Number($('speed').value) }, 'started: learning the reference for a few seconds', '#5fd38d');
+$('relearn').onclick = () => act('/api/relearn', {}, 'learning the reference again: keep the flow normal, nothing injected', '#ffc857');
+$('calbtn').onclick = () => { $('calbar').style.display = 'flex'; };
+$('calno').onclick = () => { $('calbar').style.display = 'none'; };
+$('calgo').onclick = () => act('/api/calibrate', {}, 'calibrating: keep the pipe full for 2 s', '#ffc857');
+$('recstart').onclick = () => { const f = $('fname').value.trim(); $('fname').value = '';
+  act('/api/rec/start', { name: $('sname').value, file_name: f }, '&#9679; recording' + (f ? ' <b>' + f + '</b>' : ''), '#ff4d4d'); };
+$('recnext').onclick = () => { const f = $('fname').value.trim(); $('fname').value = '';
+  act('/api/rec/next', { file_name: f }, d => `next file: <b>file ${d.segment}${f ? ' ' + f : ''}</b>`, '#ffffff'); };
+$('fname').addEventListener('keydown', e => { if (e.key !== 'Enter') return; e.preventDefault();
+  if ((S.rec || {}).recording) $('recnext').onclick(); else $('recstart').onclick(); e.target.blur(); });
+$('recstop').onclick = () => act('/api/rec/stop', {}, 'recording stopped');
+function doMark() { act('/api/mark', { kind: $('mkind').value, note: $('mnote').value, sand_g: $('msand').value },
+  d => `mark <b>#${d.mark.id}</b> ${d.mark.kind}`, '#ffb347'); $('mnote').value = ''; }
+$('mark').onclick = doMark; $('undo').onclick = () => act('/api/mark/undo', {}, 'last mark removed');
+$('win').onchange = draw;
+document.addEventListener('keydown', e => {
+  const t = e.target.tagName; if (t === 'INPUT' || t === 'SELECT' || e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+  const R = S.rec || {};
+  if (e.key === 'Enter') { e.preventDefault(); if (R.recording) $('recnext').onclick(); else if (S.running && S.source !== 'replay') $('recstart').onclick(); }
+  else if (e.key === ' ') { e.preventDefault(); if (R.recording) doMark(); else toast('start recording first', '#ffc857'); }
+});
+for (const id of ['sname', 'mnote', 'msand']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+
+// ---------- setup ----------
+const num = v => (v === '' || v == null ? null : Number(v));
+function renderSetup() {
+  const v = SV, p = v.pipe;
+  $('pdia').value = p.diameter_mm; $('pdis').value = p.diameter_is; $('pwall').value = p.wall_mm;
+  $('pmat').innerHTML = v.materials.map(m => `<option ${m === p.wall_material ? 'selected' : ''}>${m}</option>`).join('');
+  $('pliq').value = p.liquid; $('ptemp').value = p.temperature_c; $('pspeed').value = p.custom_speed_m_s;
+  $('ptemp').disabled = p.liquid !== 'water'; $('pspeed').disabled = p.liquid === 'water';
+  $('pgeo').innerHTML = v.geo.error ? `<span class="err">${v.geo.error}</span>` : `bore ${v.geo.inner_mm.toFixed(2)} mm · far-wall echo at ${v.geo.far_us.toFixed(1)} µs`;
+  $('pc').textContent = v.geo.error ? '' : `in force: ${v.geo.c.toFixed(1)} m/s`;
+  $('bvolt').innerHTML = v.voltages.map(x => `<option ${x == v.board.voltage ? 'selected' : ''}>${x}</option>`).join(''); $('brate').value = v.board.rate;
+  $('bmax').innerHTML = (v.max_rate ? `max ${v.max_rate} Hz for these probes` : '') + (v.error ? ` <span class="err">${v.error}</span>` : '');
+  const sel = (opts, cur) => opts.map(o => `<option value="${o}" ${String(o) === String(cur) ? 'selected' : ''}>${o === '' ? '—' : o}</option>`).join('');
+  $('stab').innerHTML = Object.keys(v.channels).map(n => { const c = v.channels[n], r = v.resolved[n] || {};
+    return `<tr data-ch="${n}" class="${c.enabled ? '' : 'offrow'}"><td><input type="checkbox" data-k="enabled" ${c.enabled ? 'checked' : ''}></td><td><b>${n}</b></td>
+      <td><select data-k="position">${sel([''].concat(v.positions), c.position)}</select></td>
+      <td><input data-k="label" value="${c.label || ''}" style="width:100px"></td>
+      <td><input type="number" step="0.25" data-k="frequency" value="${c.frequency}"></td>
+      <td><input type="number" step="1" data-k="gain" value="${c.gain}"></td>
+      <td><select data-k="filter">${sel(['auto'].concat(v.filters), c.filter)}</select></td>
+      <td><input type="number" step="5" data-k="range_mm" value="${c.range_mm ?? ''}" placeholder="auto"></td>
+      <td class="res">${r.error ? '<span class="err">' + r.error + '</span>' : c.enabled ? r.summary : '<span class="hint">off</span>'}</td></tr>`; }).join('');
+}
+function readSetup() {
+  const st = { board: { voltage: Number($('bvolt').value), rate: Number($('brate').value) },
+    pipe: { diameter_mm: num($('pdia').value), diameter_is: $('pdis').value, wall_mm: num($('pwall').value), wall_material: $('pmat').value,
+            liquid: $('pliq').value, temperature_c: num($('ptemp').value), custom_speed_m_s: num($('pspeed').value) }, channels: {} };
+  for (const tr of $('stab').rows) { const c = {};
+    for (const el of tr.querySelectorAll('[data-k]')) { const k = el.dataset.k;
+      c[k] = el.type === 'checkbox' ? el.checked : (['frequency', 'gain', 'range_mm'].includes(k) ? num(el.value) : el.value); }
+    st.channels[tr.dataset.ch] = c; }
+  return st;
+}
+async function loadSetup() { SV = await (await fetch('/api/setup')).json(); renderSetup(); }
+async function recheck() { const d = await post('/api/check', readSetup()); if (d.error && !d.channels) { $('smsg').innerHTML = `<span class="err">${d.error}</span>`; return; } SV = d; renderSetup(); }
+$('setup').addEventListener('change', recheck);
+$('setupbtn').onclick = async () => { const p = $('setup'); p.hidden = !p.hidden; if (!p.hidden) await loadSetup(); };
+$('srevert').onclick = () => { $('smsg').textContent = ''; loadSetup(); };
+$('sapply').onclick = async () => { const d = await post('/api/setup', readSetup());
+  $('smsg').innerHTML = d.error ? `<span class="err">${d.error}</span>` : '<span class="okc">saved</span>'; if (!d.error) { await loadSetup(); $('probes').dataset.key = ''; } };
+
+window.addEventListener('resize', () => { buildLUT(); draw(); });
+setInterval(poll, 400); setInterval(pull, 100); poll();
+</script></body></html>
